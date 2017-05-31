@@ -693,6 +693,11 @@ class Generic (a :: *) where
 \begin{framed}
 \vspace{-0.25cm}
 \begin{lstlisting}
+newtype SOP (f :: (k -> *)) (xss :: [[k]])
+  = SOP (NS (NP f) xss)
+  
+type Rep a = SOP I (Code a)
+
 class (All SListI (Code a)) => Generic (a :: *) where
   type Code a :: [[*]]
   type Code a = GCode a
@@ -758,6 +763,144 @@ instance Generic (BinTree a) where
 
 \section{Реализация обобщённого зиппера}
 \label{sec:generic-zippers-sop}
+
+В текущем разделе будет описан разработанный механизм автоматизированной генерации обобщённого представления контекста зиппера, основанный на структурном представлении типа в виде $N$"/арной суммы произведений, с использованием правил дифференцирования типов данных, рассмотренных в разделе~\ref{sec:zippers}.
+
+Данное решение демонстрирует выразительность современных средств языка Haskell и нового подхода к обобщённому программированию типов данных и программированию на уровне типов применительно к задаче построения обобщённого зиппера.
+
+\subsection{Введение алгебраических операций над типами}
+Для дальнейшей работы с представлениями типов в форме вложенных списочных структур мы введём следующие функции на уровне типов, которые являются алгебраическими операциями, если введённые конструкции на типах мыслить как суммы и произведения, фактически же они соответствуют продвинутым версиям функций работы со списками:
+\begin{itemize}
+\item \textsl{сложение $N$-арных сумм произведений}~--- это конкатенация списков из списков типов;
+\item \textsl{умножение типа на $N$-арную сумму произведений}~--- добавление типа в начало каждого внутреннего списка суммы;
+\item \textsl{умножение $N$-арного произведения на сумму произведений}~--- конкатенация списка типов с каждым внутренним списком суммы.
+\end{itemize}
+
+Все функции определяются рекурсивно на списках уровня типов, их реализация приведена в листингах~\ref{list:sums-adding}--\ref{list:prod-mult}.
+\begin{figure}[h]
+\begin{framed}
+\ttfamily\small
+\textbf{type family} (.++) (xs :: [[*]]) (ys :: [[*]]) :: [[*]]\\
+\\
+\textbf{type instance} (x ': xs) .++ ys = x ': (xs .++ ys)\\
+\textbf{type instance} '[]~~~~~~~.++ ys = ys
+\vspace{-0.25cm}
+\end{framed}
+\caption{Сложение $N$-арных сумм произведений}
+\label{list:sums-adding}
+\end{figure}
+
+\begin{figure}[h]
+\begin{framed}
+\ttfamily\small
+\textbf{type family} (.*) (x :: *) (ys :: [[*]]) :: [[*]]\\
+\\
+\textbf{type instance} x .* (ys ': yss) = (x ': ys) ': (x .* yss)\\
+\textbf{type instance} x .* '[]~~~~~~~~~= '[]
+\end{framed}
+\caption{Умножение типа на $N$-арную сумму произведений}
+\label{list:type-mult}
+\end{figure}
+\newpage
+
+\begin{figure}[h]
+\begin{framed}
+\ttfamily\small
+\textbf{type family} (.**) (xs :: [*]) (ys :: [[*]]) :: [[*]]\\
+\\
+\textbf{type instance} (x ': xs) .** yss = x .* (xs .** yss)\\
+\textbf{type instance} '[]~~~~~~~.** yss = yss
+\end{framed}
+\caption{Умножение $N$-арного произведения на сумму произведений}
+\label{list:prod-mult}
+\end{figure}
+
+Например, вызов \lstinline{'[Int, Bool] .** '[ '[Bool], '[Bool, Char]]} вычислит тип \lstinline{'[ '[Int, Bool, Bool], '[Int, Bool, Bool, Char]]}.
+
+Введение приоритета операций (листинг~\ref{list:priority}) позволит далее не ставить скобки в выражениях с их участием.
+\begin{figure}[h]
+\begin{framed}
+\vspace{-0.25cm}
+\begin{lstlisting}
+infixr 6 .++
+infixr 7 .*
+infixr 7 .**
+\end{lstlisting}
+\vspace{-0.25cm}
+\end{framed}
+\caption{Введение приоритета операций}
+\label{list:priority}
+\end{figure}
+
+\subsection{Получение типа контекста}
+
+Следующим этапом для построения обобщённого представления типа контекста является определение функции дифференцирования $N$"/арного произведения типов (листинг~\ref{list:diff-prod}).
+\begin{figure}[h]
+\begin{framed}
+\ttfamily\small
+\textbf{type family} DiffProd (a :: *) (xs :: [*]) :: [[*]] \textbf{where}\\
+\ind DiffProd a '[]  = '[]\\
+\ind DiffProd a '[a] = '[ '[]]\\
+\ind DiffProd a '[x] = '[]\\
+\ind DiffProd a (x ': xs)\\
+\ind\ind = xs .** DiffProd a '[x] .++ x .* DiffProd a xs
+\end{framed}
+\caption{Дифференцирование $N$"/арного произведения}
+\label{list:diff-prod}
+\end{figure}
+
+Функция, вычисляющая тип контекста, реализованная с использованием всех введённых ранее операций, представлена в листинге~\ref{list:to-context}.\newpage
+\begin{figure}[h]
+\begin{framed}
+\ttfamily\small
+\textbf{type family} ToContext (a :: *) (code :: [[*]]) :: [[*]]\\
+\\
+\textbf{type instance} ToContext a (xs ': xss)\\
+\ind = DiffProd a xs .++ ToContext a xss\\
+\textbf{type instance} ToContext a '[] = '[]
+\end{framed}
+\caption{Генерация типа контекста}
+\label{list:to-context}
+\end{figure}
+
+К примеру, для типа \texttts{Tree} (листинг~\ref{list:tree}) и вызова
+\begin{lstlisting}[language=Haskell]
+type RepTreeContext = NS (NP I) (ToContext Tree (Code Tree))
+\end{lstlisting}
+будет автоматически сгенерирован следующий код (листинг~\ref{list:rep-context}).
+\begin{figure}[h]
+\begin{framed}
+\vspace{-0.25cm}
+\begin{lstlisting}
+data Tree = Leaf  Int
+          | TNode Tree Tree Int Bool Tree
+          | BNode Bool Tree Tree
+  deriving GHC.Generic
+
+instance Generic Tree
+\end{lstlisting}
+\vspace{-0.25cm}
+\end{framed}
+\caption{АТД: дерево}
+\label{list:tree}
+\end{figure}
+
+\begin{figure}[h]
+\begin{framed}
+\vspace{-0.25cm}
+\begin{lstlisting}
+type RepTreeContext = NS (NP I)
+    ('[ '[Tree, Int, Bool, Tree]
+      , '[Tree, Int, Bool, Tree]
+      , '[Tree, Tree, Int, Bool]
+      , '[Bool, Tree]
+      , '[Bool, Tree] ])
+\end{lstlisting}
+\vspace{-0.25cm}
+\end{framed}
+\caption{Автоматически генерируемый код типа контекста}
+\label{list:rep-context}
+\end{figure}
 
 % Печать списка литературы (библиографии)
 \printbibliography[heading=bibintoc%
